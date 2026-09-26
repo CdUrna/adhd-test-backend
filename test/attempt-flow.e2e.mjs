@@ -45,6 +45,24 @@ try {
     }),
   });
 
+  await withE2eDatabase((client) =>
+    client.query("UPDATE quiz_versions SET status = 'ARCHIVED' WHERE id = $1", [
+      quiz.id,
+    ]),
+  );
+  try {
+    await expectStatus("/attempts/complete", 400, {
+      method: "POST",
+      body: JSON.stringify(createCompletionBody(quiz, "MALE", 0)),
+    });
+  } finally {
+    await withE2eDatabase((client) =>
+      client.query("UPDATE quiz_versions SET status = 'PUBLISHED' WHERE id = $1", [
+        quiz.id,
+      ]),
+    );
+  }
+
   const guestCompletion = await completeQuiz(quiz, "FEMALE", 0);
   assert.equal(guestCompletion.nextStep, "AUTH_REQUIRED");
   assert.equal(typeof guestCompletion.claimToken, "string");
@@ -69,7 +87,16 @@ try {
   });
   assert.equal(registrationResponse.status, 201);
   assert.equal((await registrationResponse.json()).attemptClaimed, true);
-  const sessionCookie = registrationResponse.headers.getSetCookie()[0].split(";", 1)[0];
+  assert.equal(registrationResponse.headers.getSetCookie().length > 0, true);
+
+  const loginResponse = await fetch(`${apiUrl}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(loginResponse.status, 200);
+  assert.equal((await loginResponse.json()).attemptClaimed, false);
+  assert.equal(loginResponse.headers.getSetCookie().length > 0, true);
 
   await expectStatus("/auth/login", 401, {
     method: "POST",
@@ -90,13 +117,40 @@ try {
     headers: { Cookie: createExpiredSessionCookie() },
   });
 
-  const retakeCompletion = await completeQuiz(quiz, "MALE", -1, sessionCookie);
+  const loginClaimCompletion = await completeQuiz(quiz, "FEMALE", 0);
+  const loginClaimResponse = await fetch(`${apiUrl}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      claimToken: loginClaimCompletion.claimToken,
+    }),
+  });
+  assert.equal(loginClaimResponse.status, 200);
+  assert.equal((await loginClaimResponse.json()).attemptClaimed, true);
+  const loginSessionCookie = loginClaimResponse.headers
+    .getSetCookie()[0]
+    .split(";", 1)[0];
+
+  const claimedReport = await request("/reports/current", {
+    headers: { Cookie: loginSessionCookie },
+  });
+  assert.equal(claimedReport.attemptId, loginClaimCompletion.attemptId);
+  assert.equal(claimedReport.resultType, "HIGH_ADHD_TRAITS");
+
+  const retakeCompletion = await completeQuiz(
+    quiz,
+    "MALE",
+    -1,
+    loginSessionCookie,
+  );
   assert.equal(retakeCompletion.nextStep, "REPORT_READY");
   assert.equal("claimToken" in retakeCompletion, false);
   assertNoResultLeak(retakeCompletion);
 
   const report = await request("/reports/current", {
-    headers: { Cookie: sessionCookie },
+    headers: { Cookie: loginSessionCookie },
   });
   assert.equal(report.attemptId, retakeCompletion.attemptId);
   assert.equal(report.score, 0);
@@ -132,15 +186,19 @@ function completeQuiz(quiz, gender, optionIndex, cookie) {
   return request("/attempts/complete", {
     method: "POST",
     headers: cookie ? { Cookie: cookie } : undefined,
-    body: JSON.stringify({
-      quizVersionId: quiz.id,
-      gender,
-      answers: quiz.questions.map((question) => ({
-        questionId: question.id,
-        value: question.options.at(optionIndex).value,
-      })),
-    }),
+    body: JSON.stringify(createCompletionBody(quiz, gender, optionIndex)),
   });
+}
+
+function createCompletionBody(quiz, gender, optionIndex) {
+  return {
+    quizVersionId: quiz.id,
+    gender,
+    answers: quiz.questions.map((question) => ({
+      questionId: question.id,
+      value: question.options.at(optionIndex).value,
+    })),
+  };
 }
 
 function assertNoResultLeak(body) {

@@ -19,7 +19,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
-import type { Response } from "express";
+import type { CookieOptions, Response } from "express";
 import { AuthService } from "./auth.service";
 import type { AuthenticatedRequest } from "./auth.types";
 import { AuthResponse, AuthUserResponse } from "./dto/auth.response";
@@ -97,11 +97,14 @@ export class AuthController {
     return Number.isFinite(configured) && configured > 0 ? configured : 604800;
   }
 
-  private get cookieOptions() {
+  private get cookieOptions(): CookieOptions {
     return {
       httpOnly: true,
-      secure: this.config.get<string>("NODE_ENV") === "production",
-      sameSite: "lax" as const,
+      secure: this.config.get<string>("AUTH_COOKIE_SECURE") === "true",
+      sameSite: this.config.get<"lax" | "strict" | "none">(
+        "AUTH_COOKIE_SAME_SITE",
+        "lax",
+      ),
       path: "/",
     };
   }

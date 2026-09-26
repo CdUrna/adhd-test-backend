@@ -5,21 +5,15 @@ import {
 } from "@nestjs/common";
 import { AttemptStatus } from "../generated/prisma/enums";
 import { PrismaService } from "../prisma/prisma.service";
-import {
-  CurrentReportResponse,
-  ReportFaqResponse,
-  ReportSectionResponse,
-} from "./dto/current-report.response";
-
-type StoredReportPayload = {
-  disclaimer?: unknown;
-  sections?: unknown;
-  faq?: unknown;
-};
+import { CurrentReportResponse } from "./dto/current-report.response";
+import { ReportSnapshotParser } from "./parsing/report-snapshot.parser";
 
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly snapshotParser: ReportSnapshotParser,
+  ) {}
 
   async getCurrent(userId: string): Promise<CurrentReportResponse> {
     const attempt = await this.prisma.quizAttempt.findFirst({
@@ -44,73 +38,26 @@ export class ReportsService {
       throw new InternalServerErrorException("Report data is incomplete");
     }
 
-    const payload = attempt.reportSnapshot.payload as StoredReportPayload;
+    if (
+      attempt.score !== attempt.reportSnapshot.score ||
+      attempt.resultType !== attempt.reportSnapshot.resultType
+    ) {
+      throw new InternalServerErrorException("Report snapshot is inconsistent");
+    }
+
+    const payload = this.snapshotParser.parse(
+      attempt.reportSnapshot.reportVersion,
+      attempt.reportSnapshot.payload,
+    );
 
     return {
       attemptId: attempt.id,
       score: attempt.score,
       resultType: attempt.resultType,
       completedAt: attempt.completedAt.toISOString(),
-      disclaimer: this.readDisclaimer(payload),
-      sections: this.readSections(payload),
-      faq: this.readFaq(payload),
+      disclaimer: payload.disclaimer,
+      sections: payload.sections,
+      faq: payload.faq,
     };
-  }
-
-  private readDisclaimer(payload: StoredReportPayload): string {
-    return typeof payload.disclaimer === "string" ? payload.disclaimer : "";
-  }
-
-  private readSections(payload: StoredReportPayload): ReportSectionResponse[] {
-    if (!Array.isArray(payload.sections)) {
-      return [];
-    }
-
-    return payload.sections.flatMap((section) => {
-      if (!this.isRecord(section)) {
-        return [];
-      }
-
-      const { key, type, title, content, items, outro } = section;
-      if (
-        typeof key !== "string" ||
-        typeof type !== "string" ||
-        typeof title !== "string" ||
-        typeof content !== "string"
-      ) {
-        return [];
-      }
-
-      return [{
-        key,
-        type,
-        title,
-        content,
-        items: Array.isArray(items)
-          ? items.filter((item): item is string => typeof item === "string")
-          : undefined,
-        outro: typeof outro === "string" ? outro : undefined,
-      }];
-    });
-  }
-
-  private readFaq(payload: StoredReportPayload): ReportFaqResponse[] {
-    if (!Array.isArray(payload.faq)) {
-      return [];
-    }
-
-    return payload.faq.flatMap((entry) => {
-      if (!this.isRecord(entry)) {
-        return [];
-      }
-
-      return typeof entry.question === "string" && typeof entry.answer === "string"
-        ? [{ question: entry.question, answer: entry.answer }]
-        : [];
-    });
-  }
-
-  private isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
   }
 }

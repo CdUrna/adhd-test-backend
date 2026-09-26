@@ -29,10 +29,11 @@ runner validates the `_e2e` suffix before destructive setup, applies committed
 migrations, inserts its own quiz fixture, and clears the test schema afterward.
 Development data in `adhd_test` is not modified.
 
-The suite covers the guest registration and claim flow, authenticated retakes,
-protected reports, incomplete or invalid answers, invalid/expired/reused claim
-tokens, duplicate email, wrong password, invalid/expired sessions, transaction
-rollback, and score/result non-disclosure.
+The suite covers registration and login claim flows, a regular login,
+authenticated retakes, protected reports, archived quiz rejection, incomplete or
+invalid answers, invalid/expired/reused claim tokens, duplicate email, wrong
+password, invalid/expired sessions, transaction rollback, and score/result
+non-disclosure.
 
 The API is available at `http://localhost:4000/api/v1` and Swagger at
 `http://localhost:4000/api/docs`.
@@ -64,13 +65,34 @@ The current report endpoint is cookie-protected and returns the report snapshot
 for the user's latest completed attempt. Every retake creates a new row;
 historical attempts and their snapshots remain unchanged.
 
-## Initial architecture
+## Architecture
 
 - Published quiz versions are immutable.
+- Only a `PUBLISHED` quiz version accepts new completions.
 - Every retake creates a new attempt.
 - Anonymous attempts are claimed only through a hashed, expiring one-time token.
-- Raw answers and a generated report snapshot are stored separately.
+- Attempt, answers, and the generated report snapshot are created atomically.
+- Report generation and snapshot parsing are isolated from attempt orchestration.
+  Snapshots carry a version, and unknown or malformed versions fail explicitly
+  instead of returning partial report data.
 - High/Low and the numeric score remain hidden until the attempt belongs to an authenticated user.
+- Database checks enforce valid scores, positive ordering/version values, and
+  consistency between attempt status and completion data.
+
+The top level is organized by domain (`auth`, `quiz`, `attempts`, `reports`).
+Nested folders are used only where a domain has a separate change boundary, such
+as report `generation` and `parsing`; service-only folders would add navigation
+without improving ownership.
+
+`POST /attempts/complete` currently persists only completed attempts. The
+`IN_PROGRESS` enum value is reserved for a future incremental-save flow. The
+single `QuizVersion` aggregate is intentional for this test scope; a separate
+`Quiz` parent should be introduced only when multiple independent tests are
+required.
+
+Repeated completion requests are not idempotent and therefore create separate
+attempts. This matches retake behavior, but a production client with automatic
+network retries should send an idempotency key.
 
 ## Environment
 
@@ -81,3 +103,11 @@ historical attempts and their snapshots remain unchanged.
 - `AUTH_TOKEN_TTL_SECONDS` — session lifetime in seconds.
 - `CLAIM_TOKEN_TTL_MINUTES` — anonymous claim-token lifetime in minutes.
 - `FRONTEND_URL` — allowed credentialed CORS origin.
+- `AUTH_COOKIE_SAME_SITE` — `lax`, `strict`, or `none`.
+- `AUTH_COOKIE_SECURE` — whether the session cookie requires HTTPS. It must be
+  `true` when `AUTH_COOKIE_SAME_SITE=none`.
+
+Runtime configuration is validated during application startup. For a same-site
+deployment, the default `SameSite=lax` policy is sufficient. A cross-site
+deployment needs `SameSite=none`, HTTPS, and an explicit CSRF strategy before it
+is production-ready.
