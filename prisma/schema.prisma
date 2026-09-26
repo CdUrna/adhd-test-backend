@@ -1,0 +1,131 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum QuizVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum QuestionType {
+  SINGLE_CHOICE
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum ResultType {
+  HIGH_ADHD_TRAITS
+  LOW_ADHD_TRAITS
+}
+
+model User {
+  id           String        @id @default(uuid()) @db.Uuid
+  email        String        @unique @db.VarChar(320)
+  passwordHash String        @map("password_hash")
+  attempts     QuizAttempt[]
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model QuizVersion {
+  id          String            @id @default(uuid()) @db.Uuid
+  version     Int               @unique
+  status      QuizVersionStatus @default(DRAFT)
+  publishedAt DateTime?         @map("published_at")
+  questions   Question[]
+  attempts    QuizAttempt[]
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("quiz_versions")
+}
+
+model Question {
+  id            String       @id @default(uuid()) @db.Uuid
+  quizVersionId String       @map("quiz_version_id") @db.Uuid
+  questionKey   String       @map("question_key") @db.VarChar(100)
+  type          QuestionType @default(SINGLE_CHOICE)
+  title         String
+  position      Int
+  config        Json
+  quizVersion   QuizVersion  @relation(fields: [quizVersionId], references: [id], onDelete: Restrict)
+  answers       Answer[]
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  @@unique([quizVersionId, questionKey])
+  @@unique([quizVersionId, position])
+  @@index([questionKey])
+  @@map("questions")
+}
+
+model QuizAttempt {
+  id                  String          @id @default(uuid()) @db.Uuid
+  userId              String?         @map("user_id") @db.Uuid
+  quizVersionId       String          @map("quiz_version_id") @db.Uuid
+  status              AttemptStatus   @default(IN_PROGRESS)
+  gender              Gender
+  score               Int?
+  resultType          ResultType?     @map("result_type")
+  claimTokenHash      String?         @unique @map("claim_token_hash")
+  claimTokenExpiresAt DateTime?       @map("claim_token_expires_at")
+  startedAt           DateTime        @default(now()) @map("started_at")
+  completedAt         DateTime?       @map("completed_at")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+  user                User?           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  quizVersion         QuizVersion     @relation(fields: [quizVersionId], references: [id], onDelete: Restrict)
+  answers             Answer[]
+  reportSnapshot      ReportSnapshot?
+
+  @@index([userId, completedAt])
+  @@index([quizVersionId])
+  @@map("quiz_attempts")
+}
+
+model Answer {
+  id          String      @id @default(uuid()) @db.Uuid
+  attemptId   String      @map("attempt_id") @db.Uuid
+  questionId  String      @map("question_id") @db.Uuid
+  questionKey String      @map("question_key") @db.VarChar(100)
+  value       Json
+  points      Int
+  attempt     QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  question    Question    @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+  @@index([questionKey])
+  @@map("answers")
+}
+
+model ReportSnapshot {
+  id            String      @id @default(uuid()) @db.Uuid
+  attemptId     String      @unique @map("attempt_id") @db.Uuid
+  reportVersion Int         @map("report_version")
+  resultType    ResultType  @map("result_type")
+  score         Int
+  payload       Json
+  attempt       QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@map("report_snapshots")
+}

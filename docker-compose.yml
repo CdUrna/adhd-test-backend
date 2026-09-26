@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: adhd_test
+      POSTGRES_USER: adhd
+      POSTGRES_PASSWORD: adhd
+    ports:
+      - "55432:5432"
+    volumes:
+      - adhd_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adhd -d adhd_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  adhd_postgres_data:
