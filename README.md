@@ -2,6 +2,8 @@
 
 Independent NestJS API for the ADHD test funnel.
 
+Frontend repository: [CdUrna/adhd-test-frontend](https://github.com/CdUrna/adhd-test-frontend)
+
 ## Prerequisites
 
 - Node.js 24+
@@ -93,6 +95,37 @@ required.
 Repeated completion requests are not idempotent and therefore create separate
 attempts. This matches retake behavior, but a production client with automatic
 network retries should send an idempotency key.
+
+## Data model
+
+- `User` stores normalized email and a bcrypt password hash.
+- `QuizVersion` represents an immutable version of the test and has a lifecycle
+  status (`DRAFT`, `PUBLISHED`, or `ARCHIVED`).
+- `Question` belongs to a specific quiz version and stores stable keys, display
+  order, and answer configuration.
+- `QuizAttempt` belongs to a quiz version and optionally to a user. Every retake
+  creates a new attempt, preserving the previous result.
+- `Answer` stores both the question relation and stable question key together
+  with the submitted value and awarded points.
+- `ReportSnapshot` is a one-to-one, versioned report payload for an attempt. It
+  freezes the score, result type, sections, and FAQ shown for that completion.
+
+Relations use restrictive deletion rules so historical attempts cannot silently
+lose the quiz questions or users they depend on.
+
+## Evolution strategy
+
+- Question changes are published as a new `QuizVersion`; existing attempts stay
+  linked to the exact version that was completed.
+- Raw answers are retained for every attempt, including stable question keys,
+  so future report sections can use answers from current or previous attempts.
+- Each completed attempt stores a `ReportSnapshot`. Updating report copy or
+  generation rules therefore does not rewrite reports produced by older logic.
+- The snapshot has an explicit `reportVersion` and a strict version-aware
+  parser. A future payload shape can be introduced alongside the current one.
+- The current generator uses the calculated High/Low result. Its isolated
+  generation boundary can later receive individual answers or user history
+  without changing attempt orchestration or public API contracts.
 
 ## Environment
 
