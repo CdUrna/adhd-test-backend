@@ -96,6 +96,32 @@ Repeated completion requests are not idempotent and therefore create separate
 attempts. This matches retake behavior, but a production client with automatic
 network retries should send an idempotency key.
 
+## Design decisions and trade-offs
+
+The data model is designed around one constraint: publishing a new quiz or
+report implementation must not change the meaning of an attempt that has already
+been completed.
+
+| Decision | Why it was chosen | Advantages | Trade-offs |
+| --- | --- | --- | --- |
+| PostgreSQL with Prisma and committed migrations | Quiz attempts, users, answers, and report snapshots have relational invariants and must be reproducible in another environment. | Transactions, foreign keys, constraints, typed access, and deterministic schema deployment. | JSON fields are less convenient to query than fully normalized tables, and Prisma adds generated code and a migration workflow. |
+| Immutable `QuizVersion` records with lifecycle states | Editing published questions in place would make historical answers ambiguous. | Every attempt points to the exact question set it used, while draft and archived versions remain explicit. | Correcting a published question requires a new version and operational discipline around publishing. |
+| Store both `questionId` and stable `questionKey` on each answer | The relation validates the submitted question, while the stable key lets future report logic locate the same concept across quiz versions. | Supports historical analysis and future sections based on previous answers. | This is intentional denormalization, so write-time validation is required to keep both values consistent. |
+| Store awarded points with the raw answer | Scoring rules may change after an attempt is completed. | Old scores remain explainable and do not need to be recalculated with new rules. | More data is duplicated, and changing a scoring bug does not automatically rewrite historical results. |
+| Generate a versioned `ReportSnapshot` when completing an attempt | Report copy, structure, and generation rules are expected to evolve. | A user always sees the report that was produced for that attempt, and new payload versions can coexist with old ones. | Snapshots duplicate derived data and require a version-aware parser and migration strategy. |
+| Create guest attempts and claim them with a hashed, expiring, one-time token | The quiz must work before registration without exposing result data. | Registration and sign-in can attach an already completed attempt; a database leak does not reveal usable raw claim tokens. | Expiration and one-time consumption add lifecycle handling, and abandoned guest attempts need a future retention policy. |
+| Calculate the score only on the server and omit points from the public quiz | Client input is untrusted and the result is gated until authentication. | A modified frontend cannot choose its score, and anonymous responses reveal neither score nor High/Low. | Completing the quiz requires backend availability; offline scoring is intentionally unsupported. |
+| Persist the attempt, answers, and report snapshot in one transaction | A partial completion would leave contradictory data. | The system either stores the entire completed result or nothing. | The transaction contains more work and must remain short as report generation grows. |
+| Keep every retake as a new attempt and select the latest completed report | Future report sections may need previous answers, and the task says the current result should update. | The latest report changes without destroying history, enabling trends and future longitudinal logic. | Storage grows over time and product rules must define what “latest” means if attempts can be completed concurrently. |
+| Use an HTTP-only JWT cookie instead of returning a token in JSON | The browser application does not need direct access to authentication credentials. | Simple stateless authentication with less exposure to token-reading client code. | Immediate global revocation needs additional state, and cross-site cookies require HTTPS, CSRF protection, and stricter configuration. |
+| Start with one `QuizVersion` aggregate and a simple High/Low threshold | The test task contains one quiz and explicitly allows custom result logic. | Small, understandable implementation with clear extension points. | Multiple independent tests would require a parent `Quiz` entity, and clinically meaningful scoring would require validated domain rules. |
+| Do not implement idempotency, email verification, password reset, or incremental answer saving | These features are outside the requested scope and would add infrastructure unrelated to demonstrating the core flow. | Keeps the solution reviewable and focused on the required journey. | Network retries can create extra attempts, accounts are not email-verified, passwords cannot be recovered, and an unfinished quiz exists only in browser storage. |
+
+The main rejected alternative was recalculating reports from the current quiz and
+current generator on every read. It would store less data, but any future rule or
+content change could silently alter an old user's report, which conflicts with
+the evolution requirements of the task.
+
 ## Data model
 
 - `User` stores normalized email and a bcrypt password hash.
