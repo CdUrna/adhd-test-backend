@@ -4,6 +4,10 @@ Independent NestJS API for the ADHD test funnel.
 
 Frontend repository: [CdUrna/adhd-test-frontend](https://github.com/CdUrna/adhd-test-frontend)
 
+Live application: [adhd-test-frontend.vercel.app](https://adhd-test-frontend.vercel.app)
+
+Production API health check: [adhd-test-backend.onrender.com/api/v1/health](https://adhd-test-backend.onrender.com/api/v1/health)
+
 ## Prerequisites
 
 - Node.js 24+
@@ -20,6 +24,18 @@ Frontend repository: [CdUrna/adhd-test-frontend](https://github.com/CdUrna/adhd-
 5. Apply committed migrations with `pnpm prisma:deploy`.
 6. Seed the published quiz with `pnpm prisma:seed`.
 7. Start the API with `pnpm start:dev`.
+
+## Production deployment
+
+The public API runs on Render Free with Neon PostgreSQL. Render uses:
+
+- build: `pnpm install --frozen-lockfile && pnpm prisma:generate && pnpm build`;
+- start: `pnpm prisma:deploy && pnpm prisma:seed && pnpm start:prod`;
+- health check: `/api/v1/health`.
+
+Committed migrations are applied before every start, and the seed is idempotent.
+The free Render instance can sleep after inactivity, so its first request may be
+slower than subsequent requests.
 
 ## Quality checks
 
