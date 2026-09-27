@@ -89,9 +89,10 @@ historical attempts and their snapshots remain unchanged.
   consistency between attempt status and completion data.
 
 The top level is organized by domain (`auth`, `quiz`, `attempts`, `reports`).
-Nested folders are used only where a domain has a separate change boundary, such
-as report `generation` and `parsing`; service-only folders would add navigation
-without improving ownership.
+Nested folders mark separate change boundaries: attempt `validation` and
+`idempotency`, and report `generation` and `parsing`. The main services remain
+small workflow coordinators, while implementation details and their types stay
+next to the responsibility they belong to.
 
 `POST /attempts/complete` currently persists only completed attempts. The
 `IN_PROGRESS` enum value is reserved for a future incremental-save flow. The
