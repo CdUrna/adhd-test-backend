@@ -17,11 +17,19 @@ try {
   await prepareE2eDatabase();
   server = spawn(process.execPath, ["dist/main.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: getE2eDatabaseUrl(), PORT: String(port) },
+    env: {
+      ...process.env,
+      DATABASE_URL: getE2eDatabaseUrl(),
+      PORT: String(port),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  server.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
-  server.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
+  server.stdout.on("data", (chunk) => {
+    serverOutput += chunk.toString();
+  });
+  server.stderr.on("data", (chunk) => {
+    serverOutput += chunk.toString();
+  });
   await waitForApi();
 
   await expectStatus("/reports/current", 401);
@@ -31,10 +39,16 @@ try {
 
   await expectStatus("/attempts/complete", 400, {
     method: "POST",
-    body: JSON.stringify({ quizVersionId: quiz.id, gender: "FEMALE", answers: [] }),
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify({
+      quizVersionId: quiz.id,
+      gender: "FEMALE",
+      answers: [],
+    }),
   });
   await expectStatus("/attempts/complete", 400, {
     method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
     body: JSON.stringify({
       quizVersionId: quiz.id,
       gender: "MALE",
@@ -43,6 +57,10 @@ try {
         value: "NOT_A_REAL_OPTION",
       })),
     }),
+  });
+  await expectStatus("/attempts/complete", 400, {
+    method: "POST",
+    body: JSON.stringify(createCompletionBody(quiz, "FEMALE", 0)),
   });
 
   await withE2eDatabase((client) =>
@@ -53,20 +71,44 @@ try {
   try {
     await expectStatus("/attempts/complete", 400, {
       method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify(createCompletionBody(quiz, "MALE", 0)),
     });
   } finally {
     await withE2eDatabase((client) =>
-      client.query("UPDATE quiz_versions SET status = 'PUBLISHED' WHERE id = $1", [
-        quiz.id,
-      ]),
+      client.query(
+        "UPDATE quiz_versions SET status = 'PUBLISHED' WHERE id = $1",
+        [quiz.id],
+      ),
     );
   }
 
-  const guestCompletion = await completeQuiz(quiz, "FEMALE", 0);
+  const guestIdempotencyKey = crypto.randomUUID();
+  const guestCompletion = await completeQuiz(quiz, "FEMALE", 0, {
+    idempotencyKey: guestIdempotencyKey,
+  });
   assert.equal(guestCompletion.nextStep, "AUTH_REQUIRED");
   assert.equal(typeof guestCompletion.claimToken, "string");
   assertNoResultLeak(guestCompletion);
+  const guestReplay = await completeQuiz(quiz, "FEMALE", 0, {
+    idempotencyKey: guestIdempotencyKey,
+  });
+  assert.deepEqual(guestReplay, guestCompletion);
+  await expectStatus("/attempts/complete", 409, {
+    method: "POST",
+    headers: { "Idempotency-Key": guestIdempotencyKey },
+    body: JSON.stringify(createCompletionBody(quiz, "FEMALE", -1)),
+  });
+  const concurrentIdempotencyKey = crypto.randomUUID();
+  const [concurrentCompletion, concurrentReplay] = await Promise.all([
+    completeQuiz(quiz, "MALE", 0, {
+      idempotencyKey: concurrentIdempotencyKey,
+    }),
+    completeQuiz(quiz, "MALE", 0, {
+      idempotencyKey: concurrentIdempotencyKey,
+    }),
+  ]);
+  assert.deepEqual(concurrentReplay, concurrentCompletion);
 
   await expectStatus("/auth/register", 400, {
     method: "POST",
@@ -83,7 +125,11 @@ try {
   const registrationResponse = await fetch(`${apiUrl}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, claimToken: guestCompletion.claimToken }),
+    body: JSON.stringify({
+      email,
+      password,
+      claimToken: guestCompletion.claimToken,
+    }),
   });
   assert.equal(registrationResponse.status, 201);
   assert.equal((await registrationResponse.json()).attemptClaimed, true);
@@ -104,11 +150,19 @@ try {
   });
   await expectStatus("/auth/register", 409, {
     method: "POST",
-    body: JSON.stringify({ email, password, claimToken: guestCompletion.claimToken }),
+    body: JSON.stringify({
+      email,
+      password,
+      claimToken: guestCompletion.claimToken,
+    }),
   });
   await expectStatus("/auth/login", 400, {
     method: "POST",
-    body: JSON.stringify({ email, password, claimToken: guestCompletion.claimToken }),
+    body: JSON.stringify({
+      email,
+      password,
+      claimToken: guestCompletion.claimToken,
+    }),
   });
   await expectStatus("/reports/current", 401, {
     headers: { Cookie: "adhd_session=invalid-token" },
@@ -132,6 +186,14 @@ try {
   const loginSessionCookie = loginClaimResponse.headers
     .getSetCookie()[0]
     .split(";", 1)[0];
+  await expectStatus("/attempts/complete", 409, {
+    method: "POST",
+    headers: {
+      Cookie: loginSessionCookie,
+      "Idempotency-Key": guestIdempotencyKey,
+    },
+    body: JSON.stringify(createCompletionBody(quiz, "FEMALE", 0)),
+  });
 
   const claimedReport = await request("/reports/current", {
     headers: { Cookie: loginSessionCookie },
@@ -139,15 +201,19 @@ try {
   assert.equal(claimedReport.attemptId, loginClaimCompletion.attemptId);
   assert.equal(claimedReport.resultType, "HIGH_ADHD_TRAITS");
 
-  const retakeCompletion = await completeQuiz(
-    quiz,
-    "MALE",
-    -1,
-    loginSessionCookie,
-  );
+  const retakeIdempotencyKey = crypto.randomUUID();
+  const retakeCompletion = await completeQuiz(quiz, "MALE", -1, {
+    cookie: loginSessionCookie,
+    idempotencyKey: retakeIdempotencyKey,
+  });
   assert.equal(retakeCompletion.nextStep, "REPORT_READY");
   assert.equal("claimToken" in retakeCompletion, false);
   assertNoResultLeak(retakeCompletion);
+  const retakeReplay = await completeQuiz(quiz, "MALE", -1, {
+    cookie: loginSessionCookie,
+    idempotencyKey: retakeIdempotencyKey,
+  });
+  assert.deepEqual(retakeReplay, retakeCompletion);
 
   const report = await request("/reports/current", {
     headers: { Cookie: loginSessionCookie },
@@ -173,7 +239,9 @@ try {
   });
   await assertUserMissing("expired-");
 
-  console.log("E2E passed: positive flow, isolation, and negative security cases.");
+  console.log(
+    "E2E passed: positive flow, isolation, and negative security cases.",
+  );
 } catch (error) {
   if (serverOutput) console.error(serverOutput);
   throw error;
@@ -182,10 +250,13 @@ try {
   await cleanE2eDatabase();
 }
 
-function completeQuiz(quiz, gender, optionIndex, cookie) {
+function completeQuiz(quiz, gender, optionIndex, options = {}) {
   return request("/attempts/complete", {
     method: "POST",
-    headers: cookie ? { Cookie: cookie } : undefined,
+    headers: {
+      "Idempotency-Key": options.idempotencyKey ?? crypto.randomUUID(),
+      ...(options.cookie ? { Cookie: options.cookie } : {}),
+    },
     body: JSON.stringify(createCompletionBody(quiz, gender, optionIndex)),
   });
 }
@@ -208,15 +279,17 @@ function assertNoResultLeak(body) {
 
 async function assertUserMissing(emailPrefix) {
   const result = await withE2eDatabase((client) =>
-    client.query("SELECT COUNT(*)::int AS count FROM users WHERE email LIKE $1", [
-      `${emailPrefix}%`,
-    ]),
+    client.query(
+      "SELECT COUNT(*)::int AS count FROM users WHERE email LIKE $1",
+      [`${emailPrefix}%`],
+    ),
   );
   assert.equal(result.rows[0].count, 0);
 }
 
 function createExpiredSessionCookie() {
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const encode = (value) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
   const header = encode({ alg: "HS256", typ: "JWT" });
   const payload = encode({
     sub: crypto.randomUUID(),
@@ -240,7 +313,11 @@ async function request(path, init = {}) {
     },
   });
   const body = await response.json().catch(() => null);
-  assert.equal(response.ok, true, `${path} returned ${response.status}: ${JSON.stringify(body)}`);
+  assert.equal(
+    response.ok,
+    true,
+    `${path} returned ${response.status}: ${JSON.stringify(body)}`,
+  );
   return body;
 }
 
@@ -252,7 +329,11 @@ async function expectStatus(path, expectedStatus, init = {}) {
       ...init.headers,
     },
   });
-  assert.equal(response.status, expectedStatus, `${path} returned ${response.status}`);
+  assert.equal(
+    response.status,
+    expectedStatus,
+    `${path} returned ${response.status}`,
+  );
 }
 
 async function waitForApi() {

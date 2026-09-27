@@ -77,23 +77,26 @@ model Question {
 }
 
 model QuizAttempt {
-  id                  String          @id @default(uuid()) @db.Uuid
-  userId              String?         @map("user_id") @db.Uuid
-  quizVersionId       String          @map("quiz_version_id") @db.Uuid
-  status              AttemptStatus   @default(IN_PROGRESS)
-  gender              Gender
-  score               Int?
-  resultType          ResultType?     @map("result_type")
-  claimTokenHash      String?         @unique @map("claim_token_hash")
-  claimTokenExpiresAt DateTime?       @map("claim_token_expires_at")
-  startedAt           DateTime        @default(now()) @map("started_at")
-  completedAt         DateTime?       @map("completed_at")
-  createdAt           DateTime        @default(now()) @map("created_at")
-  updatedAt           DateTime        @updatedAt @map("updated_at")
-  user                User?           @relation(fields: [userId], references: [id], onDelete: Restrict)
-  quizVersion         QuizVersion     @relation(fields: [quizVersionId], references: [id], onDelete: Restrict)
-  answers             Answer[]
-  reportSnapshot      ReportSnapshot?
+  id                     String          @id @default(uuid()) @db.Uuid
+  userId                 String?         @map("user_id") @db.Uuid
+  quizVersionId          String          @map("quiz_version_id") @db.Uuid
+  status                 AttemptStatus   @default(IN_PROGRESS)
+  gender                 Gender
+  score                  Int?
+  resultType             ResultType?     @map("result_type")
+  claimTokenHash         String?         @unique @map("claim_token_hash")
+  claimTokenExpiresAt    DateTime?       @map("claim_token_expires_at")
+  idempotencyKeyHash     String?         @unique @map("idempotency_key_hash") @db.VarChar(64)
+  idempotencyRequestHash String?         @map("idempotency_request_hash") @db.VarChar(64)
+  idempotencyActorKey    String?         @map("idempotency_actor_key") @db.VarChar(100)
+  startedAt              DateTime        @default(now()) @map("started_at")
+  completedAt            DateTime?       @map("completed_at")
+  createdAt              DateTime        @default(now()) @map("created_at")
+  updatedAt              DateTime        @updatedAt @map("updated_at")
+  user                   User?           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  quizVersion            QuizVersion     @relation(fields: [quizVersionId], references: [id], onDelete: Restrict)
+  answers                Answer[]
+  reportSnapshot         ReportSnapshot?
 
   @@index([userId, completedAt])
   @@index([quizVersionId])

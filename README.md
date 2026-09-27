@@ -35,7 +35,8 @@ The suite covers registration and login claim flows, a regular login,
 authenticated retakes, protected reports, archived quiz rejection, incomplete or
 invalid answers, invalid/expired/reused claim tokens, duplicate email, wrong
 password, invalid/expired sessions, transaction rollback, and score/result
-non-disclosure.
+non-disclosure. It also verifies sequential and concurrent completion retries,
+payload conflicts, and reuse from a different authentication context.
 
 The API is available at `http://localhost:4000/api/v1` and Swagger at
 `http://localhost:4000/api/docs`.
@@ -53,10 +54,14 @@ The API is available at `http://localhost:4000/api/v1` and Swagger at
 
 The public quiz response intentionally omits scoring points.
 Completion validates all answers against the stored quiz version and calculates
-the score on the server. For a guest it returns `AUTH_REQUIRED` plus an expiring
-one-time claim token. For a user with a valid session it attaches the new attempt
-to that account and returns `REPORT_READY`, so a retake does not require another
-login. Neither response exposes the score or High/Low result.
+the score on the server. `POST /attempts/complete` requires a UUID v4
+`Idempotency-Key` header. Retrying the same payload and authentication context
+with the same key returns the original completion response; reusing the key for
+another payload or user returns `409 Conflict`. For a guest, completion returns
+`AUTH_REQUIRED` plus an expiring one-time claim token. For a user with a valid
+session it attaches the new attempt to that account and returns `REPORT_READY`,
+so a retake does not require another login. Neither response exposes the score
+or High/Low result.
 
 Registration requires the one-time claim token returned by anonymous attempt
 completion. Login can optionally claim a newly completed attempt for an existing
@@ -73,6 +78,8 @@ historical attempts and their snapshots remain unchanged.
 - Only a `PUBLISHED` quiz version accepts new completions.
 - Every retake creates a new attempt.
 - Anonymous attempts are claimed only through a hashed, expiring one-time token.
+- Completion retries are deduplicated by a hashed idempotency key bound to the
+  submitted payload and original authentication context.
 - Attempt, answers, and the generated report snapshot are created atomically.
 - Report generation and snapshot parsing are isolated from attempt orchestration.
   Snapshots carry a version, and unknown or malformed versions fail explicitly
@@ -92,9 +99,9 @@ single `QuizVersion` aggregate is intentional for this test scope; a separate
 `Quiz` parent should be introduced only when multiple independent tests are
 required.
 
-Repeated completion requests are not idempotent and therefore create separate
-attempts. This matches retake behavior, but a production client with automatic
-network retries should send an idempotency key.
+Completion idempotency is scoped to one submitted payload and its original
+authentication context. A deliberate retake receives a new key and therefore
+creates a new attempt, while a network retry reuses its persisted key.
 
 ## Design decisions and trade-offs
 
@@ -110,12 +117,13 @@ been completed.
 | Store awarded points with the raw answer | Scoring rules may change after an attempt is completed. | Old scores remain explainable and do not need to be recalculated with new rules. | More data is duplicated, and changing a scoring bug does not automatically rewrite historical results. |
 | Generate a versioned `ReportSnapshot` when completing an attempt | Report copy, structure, and generation rules are expected to evolve. | A user always sees the report that was produced for that attempt, and new payload versions can coexist with old ones. | Snapshots duplicate derived data and require a version-aware parser and migration strategy. |
 | Create guest attempts and claim them with a hashed, expiring, one-time token | The quiz must work before registration without exposing result data. | Registration and sign-in can attach an already completed attempt; a database leak does not reveal usable raw claim tokens. | Expiration and one-time consumption add lifecycle handling, and abandoned guest attempts need a future retention policy. |
+| Hash and persist an `Idempotency-Key` with the request and actor fingerprints | A successful completion response can be lost, causing the browser to retry an operation that already committed. | Sequential and concurrent retries return the same attempt, while changed payloads or users cannot reuse the key. The guest claim token is reconstructed with HMAC instead of being stored in plaintext. | The frontend must persist the key until it receives a response, old idempotency records need the same retention policy as attempts, and a deliberate retake must create a new key. |
 | Calculate the score only on the server and omit points from the public quiz | Client input is untrusted and the result is gated until authentication. | A modified frontend cannot choose its score, and anonymous responses reveal neither score nor High/Low. | Completing the quiz requires backend availability; offline scoring is intentionally unsupported. |
 | Persist the attempt, answers, and report snapshot in one transaction | A partial completion would leave contradictory data. | The system either stores the entire completed result or nothing. | The transaction contains more work and must remain short as report generation grows. |
 | Keep every retake as a new attempt and select the latest completed report | Future report sections may need previous answers, and the task says the current result should update. | The latest report changes without destroying history, enabling trends and future longitudinal logic. | Storage grows over time and product rules must define what “latest” means if attempts can be completed concurrently. |
 | Use an HTTP-only JWT cookie instead of returning a token in JSON | The browser application does not need direct access to authentication credentials. | Simple stateless authentication with less exposure to token-reading client code. | Immediate global revocation needs additional state, and cross-site cookies require HTTPS, CSRF protection, and stricter configuration. |
 | Start with one `QuizVersion` aggregate and a simple High/Low threshold | The test task contains one quiz and explicitly allows custom result logic. | Small, understandable implementation with clear extension points. | Multiple independent tests would require a parent `Quiz` entity, and clinically meaningful scoring would require validated domain rules. |
-| Do not implement idempotency, email verification, password reset, or incremental answer saving | These features are outside the requested scope and would add infrastructure unrelated to demonstrating the core flow. | Keeps the solution reviewable and focused on the required journey. | Network retries can create extra attempts, accounts are not email-verified, passwords cannot be recovered, and an unfinished quiz exists only in browser storage. |
+| Do not implement email verification, password reset, or incremental answer saving | These features are outside the requested scope and would add infrastructure unrelated to demonstrating the core flow. | Keeps the solution reviewable and focused on the required journey. | Accounts are not email-verified, passwords cannot be recovered, and an unfinished quiz exists only in browser storage. |
 
 The main rejected alternative was recalculating reports from the current quiz and
 current generator on every read. It would store less data, but any future rule or
@@ -130,7 +138,9 @@ the evolution requirements of the task.
 - `Question` belongs to a specific quiz version and stores stable keys, display
   order, and answer configuration.
 - `QuizAttempt` belongs to a quiz version and optionally to a user. Every retake
-  creates a new attempt, preserving the previous result.
+  creates a new attempt, preserving the previous result. Optional idempotency
+  fingerprints are nullable only for attempts created before the feature was
+  introduced.
 - `Answer` stores both the question relation and stable question key together
   with the submitted value and awarded points.
 - `ReportSnapshot` is a one-to-one, versioned report payload for an attempt. It
