@@ -1,0 +1,3 @@
+export const DEFAULT_AUTH_COOKIE_NAME = "adhd_session";
+export const DEFAULT_AUTH_TOKEN_TTL_SECONDS = 604_800;
+export const DEFAULT_CLAIM_TOKEN_TTL_MINUTES = 30;

@@ -100,6 +100,12 @@ historical attempts and their snapshots remain unchanged.
 - Report generation and snapshot parsing are isolated from attempt orchestration.
   Snapshots carry a version, and unknown or malformed versions fail explicitly
   instead of returning partial report data.
+- Controllers translate validated DTOs into service input types, so application
+  services do not depend on HTTP validation classes.
+- Attempt claiming owns its persistence rules inside the attempts domain;
+  authentication only requests a claim and never addresses attempt columns.
+- A global authentication guard protects routes by default. Explicit `Public`
+  and `OptionalAuth` metadata document the two exceptions.
 - High/Low and the numeric score remain hidden until the attempt belongs to an authenticated user.
 - Database checks enforce valid scores, positive ordering/version values, and
   consistency between attempt status and completion data.

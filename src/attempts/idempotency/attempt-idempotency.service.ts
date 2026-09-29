@@ -7,9 +7,10 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { createHash, createHmac } from "node:crypto";
 import { isUUID } from "class-validator";
-import { Prisma } from "../../generated/prisma/client";
+import { DEFAULT_CLAIM_TOKEN_TTL_MINUTES } from "../../config/config.constants";
+import { getPositiveIntegerConfig } from "../../config/config.utils";
 import { PrismaService } from "../../prisma/prisma.service";
-import { CompleteAttemptDto } from "../dto/complete-attempt.dto";
+import type { CompleteAttemptInput } from "../attempts.types";
 import { CompleteAttemptResponse } from "../dto/complete-attempt.response";
 import {
   AnonymousClaim,
@@ -25,7 +26,7 @@ export class AttemptIdempotencyService {
   ) {}
 
   createContext(
-    input: CompleteAttemptDto,
+    input: CompleteAttemptInput,
     idempotencyKey: string | undefined,
     userId?: string,
   ): AttemptIdempotencyContext {
@@ -80,13 +81,6 @@ export class AttemptIdempotencyService {
     };
   }
 
-  isUniqueConstraintError(error: unknown): boolean {
-    return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    );
-  }
-
   private findAttempt(keyHash: string) {
     return this.prisma.quizAttempt.findUnique({
       where: { idempotencyKeyHash: keyHash },
@@ -125,7 +119,7 @@ export class AttemptIdempotencyService {
     return this.createResponse(attempt.id, context, attempt.completedAt);
   }
 
-  private createRequestHash(input: CompleteAttemptDto): string {
+  private createRequestHash(input: CompleteAttemptInput): string {
     const canonicalPayload = {
       quizVersionId: input.quizVersionId,
       gender: input.gender,
@@ -148,11 +142,11 @@ export class AttemptIdempotencyService {
   }
 
   private getClaimTokenExpiry(baseTime: Date): Date {
-    const configuredTtl = Number(
-      this.config.get<string>("CLAIM_TOKEN_TTL_MINUTES", "30"),
+    const ttlMinutes = getPositiveIntegerConfig(
+      this.config,
+      "CLAIM_TOKEN_TTL_MINUTES",
+      DEFAULT_CLAIM_TOKEN_TTL_MINUTES,
     );
-    const ttlMinutes =
-      Number.isFinite(configuredTtl) && configuredTtl > 0 ? configuredTtl : 30;
 
     return new Date(baseTime.getTime() + ttlMinutes * 60_000);
   }

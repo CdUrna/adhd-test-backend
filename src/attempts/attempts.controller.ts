@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Headers,
-  Post,
-  Req,
-  UseGuards,
-} from "@nestjs/common";
+import { Body, Controller, Headers, Post, Req } from "@nestjs/common";
 import {
   ApiBadRequestResponse,
   ApiConflictResponse,
@@ -16,7 +9,7 @@ import {
 } from "@nestjs/swagger";
 import { AttemptsService } from "./attempts.service";
 import type { OptionallyAuthenticatedRequest } from "../auth/auth.types";
-import { OptionalJwtAuthGuard } from "../auth/optional-jwt-auth.guard";
+import { OptionalAuth } from "../auth/auth.decorators";
 import { CompleteAttemptDto } from "./dto/complete-attempt.dto";
 import { CompleteAttemptResponse } from "./dto/complete-attempt.response";
 
@@ -26,7 +19,7 @@ export class AttemptsController {
   constructor(private readonly attemptsService: AttemptsService) {}
 
   @Post("complete")
-  @UseGuards(OptionalJwtAuthGuard)
+  @OptionalAuth()
   @ApiHeader({
     name: "Idempotency-Key",
     description: "A UUID v4 reused when retrying the same completion request",
@@ -44,7 +37,14 @@ export class AttemptsController {
     @Req() request: OptionallyAuthenticatedRequest,
   ): Promise<CompleteAttemptResponse> {
     return this.attemptsService.complete(
-      input,
+      {
+        quizVersionId: input.quizVersionId,
+        gender: input.gender,
+        answers: input.answers.map(({ questionId, value }) => ({
+          questionId,
+          value,
+        })),
+      },
       idempotencyKey,
       request.auth?.sub,
     );

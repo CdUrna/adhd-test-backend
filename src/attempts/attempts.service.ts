@@ -2,9 +2,10 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "../generated/prisma/client";
 import { AttemptStatus } from "../generated/prisma/enums";
 import { PrismaService } from "../prisma/prisma.service";
+import { isUniqueConstraintError } from "../prisma/prisma-error.utils";
 import { ReportGeneratorService } from "../reports/generation/report-generator.service";
-import { CompleteAttemptDto } from "./dto/complete-attempt.dto";
 import { CompleteAttemptResponse } from "./dto/complete-attempt.response";
+import type { CompleteAttemptInput } from "./attempts.types";
 import { AttemptIdempotencyService } from "./idempotency/attempt-idempotency.service";
 import { ScorableAnswer, ScoringService } from "./scoring.service";
 import { AttemptValidatorService } from "./validation/attempt-validator.service";
@@ -20,7 +21,7 @@ export class AttemptsService {
   ) {}
 
   async complete(
-    input: CompleteAttemptDto,
+    input: CompleteAttemptInput,
     idempotencyKey: string | undefined,
     userId?: string,
   ): Promise<CompleteAttemptResponse> {
@@ -85,7 +86,7 @@ export class AttemptsService {
         completedAt,
       );
     } catch (error) {
-      if (!this.idempotency.isUniqueConstraintError(error)) throw error;
+      if (!isUniqueConstraintError(error)) throw error;
 
       const concurrentResponse = await this.idempotency.replay(idempotency);
       if (!concurrentResponse) throw error;

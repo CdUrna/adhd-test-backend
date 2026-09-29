@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -7,13 +6,11 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { compare, hash } from "bcryptjs";
-import { createHash } from "node:crypto";
-import { AttemptStatus } from "../generated/prisma/enums";
-import { Prisma } from "../generated/prisma/client";
+import { AttemptClaimService } from "../attempts/claim/attempt-claim.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { isUniqueConstraintError } from "../prisma/prisma-error.utils";
 import { AuthResponse } from "./dto/auth.response";
-import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
+import type { LoginInput, RegisterInput } from "./auth.types";
 
 type AuthResult = AuthResponse & {
   accessToken: string;
@@ -25,9 +22,10 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly attemptClaims: AttemptClaimService,
   ) {}
 
-  async register(input: RegisterDto): Promise<AuthResult> {
+  async register(input: RegisterInput): Promise<AuthResult> {
     const email = this.normalizeEmail(input.email);
     const passwordHash = await hash(input.password, 12);
 
@@ -37,10 +35,9 @@ export class AuthService {
           data: { email, passwordHash },
           select: { id: true, email: true },
         });
-        const attemptClaimed = await this.claimAttempt(
+        const attemptClaimed = await this.attemptClaims.claim(
+          { userId: user.id, claimToken: input.claimToken },
           transaction,
-          user.id,
-          input.claimToken,
         );
 
         return { user, attemptClaimed };
@@ -51,7 +48,7 @@ export class AuthService {
         accessToken: await this.createAccessToken(created.user),
       };
     } catch (error: unknown) {
-      if (this.isUniqueConstraintError(error)) {
+      if (isUniqueConstraintError(error)) {
         throw new ConflictException("Email is already registered");
       }
 
@@ -59,7 +56,7 @@ export class AuthService {
     }
   }
 
-  async login(input: LoginDto): Promise<AuthResult> {
+  async login(input: LoginInput): Promise<AuthResult> {
     const email = this.normalizeEmail(input.email);
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -72,7 +69,10 @@ export class AuthService {
 
     const attemptClaimed = input.claimToken
       ? await this.prisma.$transaction((transaction) =>
-          this.claimAttempt(transaction, user.id, input.claimToken!),
+          this.attemptClaims.claim(
+            { userId: user.id, claimToken: input.claimToken! },
+            transaction,
+          ),
         )
       : false;
 
@@ -96,63 +96,14 @@ export class AuthService {
     return user;
   }
 
-  private async claimAttempt(
-    transaction: Prisma.TransactionClient,
-    userId: string,
-    claimToken: string,
-  ): Promise<boolean> {
-    const claimTokenHash = createHash("sha256")
-      .update(claimToken)
-      .digest("hex");
-    const now = new Date();
-    const attempt = await transaction.quizAttempt.findFirst({
-      where: {
-        claimTokenHash,
-        claimTokenExpiresAt: { gt: now },
-        status: AttemptStatus.COMPLETED,
-        userId: null,
-      },
-      select: { id: true },
-    });
-
-    if (!attempt) {
-      throw new BadRequestException("Claim token is invalid, expired, or already used");
-    }
-
-    const claimed = await transaction.quizAttempt.updateMany({
-      where: {
-        id: attempt.id,
-        userId: null,
-        claimTokenHash,
-      },
-      data: {
-        userId,
-        claimTokenHash: null,
-        claimTokenExpiresAt: null,
-      },
-    });
-
-    if (claimed.count !== 1) {
-      throw new BadRequestException("Claim token is invalid, expired, or already used");
-    }
-
-    return true;
-  }
-
-  private createAccessToken(user: { id: string; email: string }): Promise<string> {
+  private createAccessToken(user: {
+    id: string;
+    email: string;
+  }): Promise<string> {
     return this.jwt.signAsync({ sub: user.id, email: user.email });
   }
 
   private normalizeEmail(email: string): string {
     return email.trim().toLowerCase();
-  }
-
-  private isUniqueConstraintError(error: unknown): boolean {
-    return (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "P2002"
-    );
   }
 }

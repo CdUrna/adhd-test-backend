@@ -7,7 +7,6 @@ import {
   Post,
   Req,
   Res,
-  UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -20,12 +19,17 @@ import {
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
 import type { CookieOptions, Response } from "express";
+import {
+  DEFAULT_AUTH_COOKIE_NAME,
+  DEFAULT_AUTH_TOKEN_TTL_SECONDS,
+} from "../config/config.constants";
+import { getPositiveIntegerConfig } from "../config/config.utils";
+import { Public } from "./auth.decorators";
 import { AuthService } from "./auth.service";
 import type { AuthenticatedRequest } from "./auth.types";
 import { AuthResponse, AuthUserResponse } from "./dto/auth.response";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
-import { JwtAuthGuard } from "./jwt-auth.guard";
 
 @ApiTags("auth")
 @Controller("auth")
@@ -36,6 +40,7 @@ export class AuthController {
   ) {}
 
   @Post("register")
+  @Public()
   @ApiCreatedResponse({ type: AuthResponse })
   @ApiConflictResponse({ description: "Email is already registered" })
   @ApiBadRequestResponse({ description: "Claim token is invalid or expired" })
@@ -43,13 +48,18 @@ export class AuthController {
     @Body() input: RegisterDto,
     @Res({ passthrough: true }) response: Response,
   ): Promise<AuthResponse> {
-    const result = await this.authService.register(input);
+    const result = await this.authService.register({
+      email: input.email,
+      password: input.password,
+      claimToken: input.claimToken,
+    });
     this.setAuthCookie(response, result.accessToken);
 
     return { user: result.user, attemptClaimed: result.attemptClaimed };
   }
 
   @Post("login")
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: AuthResponse })
   @ApiUnauthorizedResponse({ description: "Invalid email or password" })
@@ -58,20 +68,24 @@ export class AuthController {
     @Body() input: LoginDto,
     @Res({ passthrough: true }) response: Response,
   ): Promise<AuthResponse> {
-    const result = await this.authService.login(input);
+    const result = await this.authService.login({
+      email: input.email,
+      password: input.password,
+      claimToken: input.claimToken,
+    });
     this.setAuthCookie(response, result.accessToken);
 
     return { user: result.user, attemptClaimed: result.attemptClaimed };
   }
 
   @Post("logout")
+  @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   logout(@Res({ passthrough: true }) response: Response): void {
     response.clearCookie(this.cookieName, this.cookieOptions);
   }
 
   @Get("me")
-  @UseGuards(JwtAuthGuard)
   @ApiCookieAuth()
   @ApiOkResponse({ type: AuthUserResponse })
   @ApiUnauthorizedResponse()
@@ -87,14 +101,18 @@ export class AuthController {
   }
 
   private get cookieName(): string {
-    return this.config.get<string>("AUTH_COOKIE_NAME", "adhd_session");
+    return this.config.get<string>(
+      "AUTH_COOKIE_NAME",
+      DEFAULT_AUTH_COOKIE_NAME,
+    );
   }
 
   private get authTokenTtlSeconds(): number {
-    const configured = Number(
-      this.config.get<string>("AUTH_TOKEN_TTL_SECONDS", "604800"),
+    return getPositiveIntegerConfig(
+      this.config,
+      "AUTH_TOKEN_TTL_SECONDS",
+      DEFAULT_AUTH_TOKEN_TTL_SECONDS,
     );
-    return Number.isFinite(configured) && configured > 0 ? configured : 604800;
   }
 
   private get cookieOptions(): CookieOptions {

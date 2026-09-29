@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import cookieParser from "cookie-parser";
 import { AppModule } from "./app.module";
+import { DEFAULT_AUTH_COOKIE_NAME } from "./config/config.constants";
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
@@ -27,9 +28,15 @@ async function bootstrap(): Promise<void> {
     .setTitle("ADHD Test API")
     .setDescription("API for the ADHD test funnel")
     .setVersion("1.0")
-    .addCookieAuth(config.get<string>("AUTH_COOKIE_NAME", "adhd_session"))
+    .addCookieAuth(
+      config.get<string>("AUTH_COOKIE_NAME", DEFAULT_AUTH_COOKIE_NAME),
+    )
     .build();
-  SwaggerModule.setup("api/docs", app, SwaggerModule.createDocument(app, swaggerConfig));
+  SwaggerModule.setup(
+    "api/docs",
+    app,
+    SwaggerModule.createDocument(app, swaggerConfig),
+  );
 
   await app.listen(config.get<number>("PORT", 4000));
 }

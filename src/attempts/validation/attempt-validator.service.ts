@@ -5,7 +5,7 @@ import {
 } from "@nestjs/common";
 import { QuizVersionStatus } from "../../generated/prisma/enums";
 import { PrismaService } from "../../prisma/prisma.service";
-import { CompleteAttemptDto } from "../dto/complete-attempt.dto";
+import type { CompleteAttemptInput } from "../attempts.types";
 import { ValidatedAttempt } from "./attempt-validator.types";
 import { parseQuestionOptions } from "./question-options.parser";
 
@@ -13,7 +13,7 @@ import { parseQuestionOptions } from "./question-options.parser";
 export class AttemptValidatorService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async validate(input: CompleteAttemptDto): Promise<ValidatedAttempt> {
+  async validate(input: CompleteAttemptInput): Promise<ValidatedAttempt> {
     const quizVersion = await this.prisma.quizVersion.findUnique({
       where: { id: input.quizVersionId },
       include: {
